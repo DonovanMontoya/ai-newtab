@@ -95,7 +95,12 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
    * never receives one leaves the session idle forever — the single
    * unrecoverable bug in this design.
    */
-  const dispatch = async (event: CustomToolUse): Promise<void> => {
+  // Results computed but not yet delivered, by tool-use id. A send that fails
+  // (the connection dropped mid-build) is retried on reconnect with the same
+  // result, instead of scraping the pages again.
+  const undelivered = new Map<string, { is_error?: true; text: string }>();
+
+  const runTool = async (event: CustomToolUse): Promise<{ is_error?: true; text: string }> => {
     try {
       const blockedSites = normalizeBlockList(
         (typeof opts.blockedSites === "function" ? await opts.blockedSites() : opts.blockedSites) ?? DEFAULT_BLOCKED_SITES,
@@ -111,29 +116,31 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
         default:
           throw new Error(`Unknown custom tool: ${event.name}`);
       }
-
-      await client.beta.sessions.events.send(sessionId!, {
-        events: [
-          {
-            type: "user.custom_tool_result",
-            custom_tool_use_id: event.id,
-            content: [{ type: "text", text: JSON.stringify(result) }],
-          },
-        ],
-      });
+      return { text: JSON.stringify(result) };
     } catch (err) {
       emit.log(`tool ${event.name} failed: ${String(err)}`);
-      await client.beta.sessions.events.send(sessionId!, {
-        events: [
-          {
-            type: "user.custom_tool_result",
-            custom_tool_use_id: event.id,
-            is_error: true,
-            content: [{ type: "text", text: String(err) }],
-          },
-        ],
-      });
+      return { is_error: true, text: String(err) };
     }
+  };
+
+  /** Throws only if the result could not be sent; it is kept for the next attempt. */
+  const dispatch = async (event: CustomToolUse): Promise<void> => {
+    let result = undelivered.get(event.id);
+    if (!result) {
+      result = await runTool(event);
+      undelivered.set(event.id, result);
+    }
+    await client.beta.sessions.events.send(sessionId!, {
+      events: [
+        {
+          type: "user.custom_tool_result",
+          custom_tool_use_id: event.id,
+          ...(result.is_error ? { is_error: true } : {}),
+          content: [{ type: "text", text: result.text }],
+        },
+      ],
+    });
+    undelivered.delete(event.id);
   };
 
   const observe = (event: SessionEvent) => {
@@ -206,15 +213,6 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
         break;
       }
 
-      // Re-answer any tool call that was left hanging when the stream dropped.
-      for (const event of history) {
-        if (event.type === "agent.custom_tool_use" && !answered.has(event.id)) {
-          emit.log(`re-answering orphaned tool call ${event.id}`);
-          answered.add(event.id);
-          await dispatch(event);
-        }
-      }
-
       if (!kickedOff) {
         await client.beta.sessions.events.send(sessionId, {
           events: [
@@ -236,6 +234,16 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
       }
 
       try {
+        // Re-answer any tool call that was left hanging when the stream dropped.
+        // `answered` only holds calls whose result reached the session.
+        for (const event of history) {
+          if (event.type === "agent.custom_tool_use" && !answered.has(event.id)) {
+            emit.log(`re-answering orphaned tool call ${event.id}`);
+            await dispatch(event);
+            answered.add(event.id);
+          }
+        }
+
         for await (const event of stream) {
           if (signal?.aborted) throw new Error("aborted");
 
@@ -248,8 +256,8 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
             seen.add(event.id);
             observe(event);
             if (event.type === "agent.custom_tool_use" && !answered.has(event.id)) {
-              answered.add(event.id);
               await dispatch(event);
+              answered.add(event.id);
             }
           }
 
