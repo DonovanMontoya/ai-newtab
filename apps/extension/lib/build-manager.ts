@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { runHomepageBuild, type RunPhase } from "@homepage/agent-core";
-import { shouldAutoRebuild } from "./auto-rebuild";
+import { rebuildIntervalMs, shouldAutoRebuild, type AutoRebuildTrigger } from "./auto-rebuild";
 import { browserBridge } from "./browser-bridge";
 import {
   INITIAL_BUILD_STATE,
@@ -57,6 +57,9 @@ export class BuildManager {
       case "subscribe":
         this.send(port, { kind: "snapshot", state: this.state });
         break;
+      case "viewed":
+        void this.maybeAutoRebuild("view");
+        break;
       case "startBuild":
         void this.startBuild({ resume: msg.resume });
         break;
@@ -101,11 +104,12 @@ export class BuildManager {
       return;
     }
 
-    await this.maybeAutoRebuild();
+    await this.maybeAutoRebuild("heartbeat");
   }
 
-  /** Whether opening the day's first tab should already show a fresh homepage. */
-  private async maybeAutoRebuild() {
+  /** Rebuild in the background once the saved homepage is older than the interval. */
+  private async maybeAutoRebuild(trigger: AutoRebuildTrigger) {
+    if (this.running) return;
     const [settings, homepage, lastAttempt] = await Promise.all([
       loadSettings(),
       loadHomepage(),
@@ -120,6 +124,8 @@ export class BuildManager {
         isRunning: this.running,
         lastBuildTimestamp: homepage?.timestamp,
         lastAutoAttemptTimestamp: lastAttempt,
+        intervalMs: rebuildIntervalMs(settings.rebuildIntervalHours),
+        trigger,
         now,
       })
     ) {
@@ -127,7 +133,7 @@ export class BuildManager {
     }
 
     // Stamp the attempt before starting so a second wake (or a cancel/failure)
-    // doesn't re-trigger it this morning.
+    // doesn't re-trigger it right away.
     await extensionStore.set(KEYS.lastAutoBuildAttempt, now.toISOString());
     void this.startBuild({ resume: false });
   }

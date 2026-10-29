@@ -48,7 +48,8 @@ wall clock waiting on the model. Three things keep it alive or bring it back:
   `activeSessionId` is in storage, the worker reattaches: the orchestrator replays
   the session's event log, re-answers any tool call left hanging, and finishes.
 - **The same heartbeat** drives scheduled rebuilds (`lib/auto-rebuild.ts`), so the
-  first new tab of the day already shows a fresh homepage.
+  next new tab already shows a fresh homepage. A tab that opens or becomes
+  visible also sends `viewed`, which rebuilds a homepage older than the interval.
 
 ### Tabs are views
 

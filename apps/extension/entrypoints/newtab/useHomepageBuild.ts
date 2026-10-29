@@ -56,6 +56,14 @@ export function useHomepageBuild(onDone: (code: string) => void) {
       setState((s) => reduce(s, msg));
     };
 
+    // A tab left open overnight should catch up when the user comes back to it,
+    // not only when a fresh tab is opened.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        portRef.current?.postMessage({ kind: "viewed" } satisfies PageMsg);
+      }
+    };
+
     const connect = () => {
       if (disposed) return;
       const port = browser.runtime.connect({ name: AGENT_PORT });
@@ -69,7 +77,10 @@ export function useHomepageBuild(onDone: (code: string) => void) {
         if (!disposed) setTimeout(connect, 500);
       });
       port.postMessage({ kind: "subscribe" } satisfies PageMsg);
+      onVisible();
     };
+
+    document.addEventListener("visibilitychange", onVisible);
 
     connect();
 
@@ -81,6 +92,7 @@ export function useHomepageBuild(onDone: (code: string) => void) {
 
     return () => {
       disposed = true;
+      document.removeEventListener("visibilitychange", onVisible);
       portRef.current?.disconnect();
       portRef.current = null;
     };

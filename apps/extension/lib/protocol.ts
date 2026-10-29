@@ -37,6 +37,7 @@ export const LOG_RETENTION = 40;
 // page → worker
 export type PageMsg =
   | { kind: "subscribe" } //                    → replies with a snapshot
+  | { kind: "viewed" } //                       tab opened or shown: rebuild if the homepage is stale
   | { kind: "startBuild"; resume?: boolean } // no-op if one is already running
   | { kind: "cancel" };
 

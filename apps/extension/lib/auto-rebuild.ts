@@ -1,12 +1,30 @@
 /**
- * Auto-rebuild policy, evaluated by the worker's alarm heartbeat: one morning
- * edition a day. The first heartbeat inside the morning window rebuilds
- * headlessly, so the next new tab already shows today's homepage.
+ * Auto-rebuild policy: once the current homepage is older than the chosen
+ * interval, rebuild headlessly. The worker's alarm heartbeat checks in the
+ * background, and opening (or returning to) a new tab asks again, so a new tab
+ * never sits on a stale page.
  */
 
-/** Local hours (inclusive start, exclusive end) when the morning edition may build. */
-export const MORNING_START_HOUR = 5;
-export const MORNING_END_HOUR = 12;
+/** Interval choices offered in Settings, in hours. */
+export const REBUILD_INTERVAL_CHOICES = [6, 12, 24, 48] as const;
+
+export const DEFAULT_REBUILD_INTERVAL_HOURS = 12;
+
+/** A stored/user value as ms, falling back to the default when unset or invalid. */
+export function rebuildIntervalMs(hours?: number | null): number {
+  const h = typeof hours === "number" && hours > 0 ? hours : DEFAULT_REBUILD_INTERVAL_HOURS;
+  return h * 60 * 60 * 1000;
+}
+
+/**
+ * How long a new tab waits after a failed or cancelled auto attempt before
+ * trying again. The heartbeat waits a full interval; this covers the common
+ * case of the first attempt failing because the machine woke before the network.
+ */
+export const VIEW_RETRY_AFTER_MS = 30 * 60 * 1000;
+
+/** What asked: the background alarm, or a new-tab page being opened or shown. */
+export type AutoRebuildTrigger = "heartbeat" | "view";
 
 export interface AutoRebuildInput {
   enabled: boolean;
@@ -16,6 +34,8 @@ export interface AutoRebuildInput {
   lastBuildTimestamp?: string | null;
   /** ISO timestamp of the last auto-build attempt, if any. */
   lastAutoAttemptTimestamp?: string | null;
+  intervalMs: number;
+  trigger: AutoRebuildTrigger;
   now: Date;
 }
 
@@ -23,24 +43,22 @@ export interface AutoRebuildInput {
  * Conservative by design:
  * - Never fires before the first manual build, so nothing spends on the API
  *   before the user has engaged.
- * - Only fires in the morning window. A missed morning is skipped, not caught
- *   up later in the day; the user can always rebuild by hand.
- * - At most one attempt per morning: a build (manual or automatic) or a failed
- *   or cancelled attempt since this morning's window opened counts as today's.
+ * - Only fires once the homepage is at least an interval old. A build (manual
+ *   or automatic) restarts the clock.
+ * - The heartbeat won't retry a failed or cancelled attempt until another full
+ *   interval has passed. A new tab may retry sooner, but no sooner than
+ *   VIEW_RETRY_AFTER_MS after it, so a persistent failure can't loop.
  */
 export function shouldAutoRebuild(input: AutoRebuildInput): boolean {
-  const { enabled, hasApiKey, isRunning, lastBuildTimestamp, lastAutoAttemptTimestamp, now } = input;
+  const { enabled, hasApiKey, isRunning, lastBuildTimestamp, lastAutoAttemptTimestamp, intervalMs, trigger, now } =
+    input;
 
   if (!enabled || !hasApiKey || isRunning || !lastBuildTimestamp) return false;
 
-  const hour = now.getHours();
-  if (hour < MORNING_START_HOUR || hour >= MORNING_END_HOUR) return false;
+  const age = (iso: string) => now.getTime() - new Date(iso).getTime();
+  if (age(lastBuildTimestamp) < intervalMs) return false;
 
-  const morningStart = new Date(now);
-  morningStart.setHours(MORNING_START_HOUR, 0, 0, 0);
-  const sinceMorningStart = (iso: string) => new Date(iso).getTime() >= morningStart.getTime();
-
-  if (sinceMorningStart(lastBuildTimestamp)) return false;
-  if (lastAutoAttemptTimestamp && sinceMorningStart(lastAutoAttemptTimestamp)) return false;
-  return true;
+  if (!lastAutoAttemptTimestamp) return true;
+  const retryAfter = trigger === "view" ? VIEW_RETRY_AFTER_MS : intervalMs;
+  return age(lastAutoAttemptTimestamp) >= retryAfter;
 }

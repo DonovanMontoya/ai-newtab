@@ -22,6 +22,7 @@ export const KEYS = {
   autoRebuild: "autoRebuild",
   /** ISO timestamp of the last auto-build *attempted* (success or not). */
   lastAutoBuildAttempt: "lastAutoBuildAttempt",
+  rebuildIntervalHours: "autoRebuildIntervalHours",
   /** Throttled mirror of the live build state, for tabs that open while the worker sleeps. */
   buildSnapshot: "buildSnapshot",
 } as const;
@@ -40,6 +41,7 @@ export interface Settings {
   model: HomepageModel;
   /** Unset means on — auto-rebuild is opt-out. */
   autoRebuild: boolean;
+  rebuildIntervalHours: number | null;
 }
 
 /** The `KVStore` agent-core persists its agent/environment/session IDs through. */
@@ -63,6 +65,7 @@ export async function loadSettings(): Promise<Settings> {
     KEYS.blockedSites,
     KEYS.model,
     KEYS.autoRebuild,
+    KEYS.rebuildIntervalHours,
   ]);
   const model = s[KEYS.model] as string | undefined;
   return {
@@ -72,10 +75,11 @@ export async function loadSettings(): Promise<Settings> {
     // Fall back if a stored model is no longer offered.
     model: MODEL_CHOICES.find((m) => m.id === model)?.id ?? DEFAULT_MODEL,
     autoRebuild: s[KEYS.autoRebuild] !== false,
+    rebuildIntervalHours: (s[KEYS.rebuildIntervalHours] as number | undefined) ?? null,
   };
 }
 
-export async function saveSetting<K extends "apiKey" | "systemPrompt" | "blockedSites" | "model" | "autoRebuild">(
+export async function saveSetting<K extends "apiKey" | "systemPrompt" | "blockedSites" | "model" | "autoRebuild" | "rebuildIntervalHours">(
   key: K,
   value: Settings[K],
 ): Promise<void> {
